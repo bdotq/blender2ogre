@@ -21,7 +21,7 @@ def dot_scene(path, scene_name=None):
         scene_name = bpy.context.scene.name
     scene_file = scene_name + '.scene'
     target_scene_file = join(path, scene_file)
-    
+
     # Create target path if it does not exist
     if not os.path.exists(path):
         print("Creating Directory -", path)
@@ -37,16 +37,16 @@ def dot_scene(path, scene_name=None):
     for ob in bpy.context.scene.objects:
         if ob.subcollision:
             continue
-        if not config.get("EXPORT_HIDDEN") and ob.hide:
+        if not config.get("EXPORT_HIDDEN") and ob.hide_viewport:
             continue
-        if config.get("SELONLY") and not ob.select:
+        if config.get("SELONLY") and not ob.select_get():
             if ob.type == 'CAMERA' and config.get("FORCE_CAMERA"):
                 pass
             elif ob.type == 'LAMP' and config.get("FORCE_LAMPS"):
                 pass
             else:
                 continue
-        if ob.type == 'EMPTY' and ob.dupli_group and ob.dupli_type == 'GROUP':
+        if ob.type == 'EMPTY' and ob.instance_collection and ob.instance_type == 'COLLECTION':
             linkedgroups.append(ob)
         else:
             # Gather data of invalid names. Don't bother user with warnings on names
@@ -68,19 +68,19 @@ def dot_scene(path, scene_name=None):
     # Linked groups - allows 3 levels of nested blender library linking
     temps = []
     for e in linkedgroups:
-        grp = e.dupli_group
+        grp = e.instance_collection
         subs = []
         for o in grp.objects:
             if o.type=='MESH':
                 subs.append( o )     # TOP-LEVEL
-            elif o.type == 'EMPTY' and o.dupli_group and o.dupli_type == 'GROUP':
+            elif o.type == 'EMPTY' and o.instance_collection and o.instance_type == 'COLLECTION':
                 ss = []     # LEVEL2
-                for oo in o.dupli_group.objects:
+                for oo in o.instance_collection.objects:
                     if oo.type=='MESH':
                         ss.append( oo )
-                    elif oo.type == 'EMPTY' and oo.dupli_group and oo.dupli_type == 'GROUP':
+                    elif oo.type == 'EMPTY' and oo.instance_collection and oo.instance_type == 'COLLECTION':
                         sss = []    # LEVEL3
-                        for ooo in oo.dupli_group.objects:
+                        for ooo in oo.instance_collection.objects:
                             if ooo.type=='MESH':
                                 sss.append( ooo )
                         if sss:
@@ -166,7 +166,11 @@ def dot_scene(path, scene_name=None):
         print('  Exported Ogre Scene:', target_scene_file)
 
     for ob in temps:
-        bpy.context.scene.objects.unlink( ob )
+        #BQfix for 2.8 unable to find merged object in collection
+        #bpy.context.scene.objects.unlink( ob )
+        #bpy.context.collection.objects.unlink( ob )
+        bpy.data.objects.remove(ob)
+
 
 class _WrapLogic(object):
     SwapName = { 'frame_property' : 'animation' } # custom name hacks
@@ -248,6 +252,9 @@ def _mesh_entity_helper(doc, ob, o):
     user = doc.createElement('userData')
     o.appendChild(user)
 
+    """
+    nope - no more ".game" in 2.80
+
     # # extended format - BGE Physics ##
     _property_helper(doc, user, 'mass', ob.game.mass)
     _property_helper(doc, user, 'mass_radius', ob.game.radius)
@@ -270,6 +277,7 @@ def _mesh_entity_helper(doc, ob, o):
     _property_helper(doc, user, 'damping_trans', ob.game.damping)
     _property_helper(doc, user, 'damping_rot', ob.game.rotation_damping)
     _property_helper(doc, user, 'inertia_tensor', ob.game.form_factor)
+    """
 
     mesh = ob.data
     # custom user props
@@ -314,7 +322,7 @@ def _ogre_node_helper( doc, ob, prefix='', pos=None, rot=None, scl=None ):
         s.setAttribute('z', '%6f'%z)
     else:        # scale is different in Ogre from blender - rotation is removed
         ri = mat.to_quaternion().inverted().to_matrix()
-        scale = ri.to_4x4() * mat
+        scale = ri.to_4x4() @ mat
         v = swap( scale.to_scale() )
         x=abs(v.x); y=abs(v.y); z=abs(v.z)
         s.setAttribute('x', '%6f'%x)
@@ -358,8 +366,7 @@ def ogre_document(materials):
     # Environ settings
     world = bpy.context.scene.world
     if world: # multiple scenes - other scenes may not have a world
-        _c = [ ('colourAmbient', world.ambient_color),
-               ('colourBackground', world.horizon_color)]
+        _c = [ ('colourBackground', world.color)]
         for ctag, color in _c:
             a = doc.createElement(ctag); environ.appendChild( a )
             a.setAttribute('r', '%s'%color.r)
@@ -376,7 +383,7 @@ def ogre_document(materials):
         #a.setAttribute('mode', world.mist_settings.falloff.lower() )    # not on DTD spec
         a.setAttribute('linearEnd', '%s' %(world.mist_settings.start+world.mist_settings.depth))
         a.setAttribute('expDensity', world.mist_settings.intensity)
-        
+
         c = doc.createElement('colourDiffuse'); a.appendChild( c )
         c.setAttribute('r', '%s'%color.r)
         c.setAttribute('g', '%s'%color.g)
@@ -393,7 +400,7 @@ def dot_scene_node_export( ob, path, doc=None, rex=None,
     xmlparent.appendChild(o)
 
     # Custom user props
-    if len(ob.items()) + len(ob.game.properties) > 0:
+    if len(ob.items()) > 0:
         user = doc.createElement('userData')
         o.appendChild(user)
 
@@ -402,30 +409,16 @@ def dot_scene_node_export( ob, path, doc=None, rex=None,
         if not propname.startswith('_'):
             _property_helper(doc, user, propname, propvalue)
 
-    # Custom user props from BGE props by Mind Calamity
-    for prop in ob.game.properties:
-        _property_helper(doc, user, prop.name, prop.value)
-
-    # BGE subset
-    if len(ob.game.sensors) + len(ob.game.actuators) > 0:
-        game = doc.createElement('game')
-        o.appendChild( game )
-        sens = doc.createElement('sensors')
-        game.appendChild( sens )
-        acts = doc.createElement('actuators')
-        game.appendChild( acts )
-        for sen in ob.game.sensors:
-            sens.appendChild( WrapSensor(sen).xml(doc) )
-        for act in ob.game.actuators:
-            acts.appendChild( WrapActuator(act).xml(doc) )
-
     if ob.type == 'MESH':
         # ob.data.tessfaces is empty. always until the following call
-        ob.data.update(calc_tessface=True)
-        # if it has no faces at all, the object itself will not be exported, BUT 
+        ob.data.update()
+        ob.data.calc_loop_triangles()
+        # if it has no faces at all, the object itself will not be exported, BUT
         # it might have children
+        print("Vertices: ", len(ob.data.vertices))
+        print("Loop triangles: ", ob.data.loop_triangles, len(ob.data.loop_triangles))
 
-    if ob.type == 'MESH' and len(ob.data.tessfaces):
+    if ob.type == 'MESH' and len(ob.data.loop_triangles):
         collisionFile = None
         collisionPrim = None
         if ob.data.name in mesh_collision_prims:
@@ -439,10 +432,6 @@ def dot_scene_node_export( ob, path, doc=None, rex=None,
         e.setAttribute('meshFile', '%s%s.mesh' %(prefix,clean_object_name(ob.data.name)) )
 
         if not collisionPrim and not collisionFile:
-            if ob.game.use_collision_bounds:
-                collisionPrim = ob.game.collision_bounds_type.lower()
-                mesh_collision_prims[ ob.data.name ] = collisionPrim
-            else:
                 for child in ob.children:
                     if child.subcollision and child.name.startswith('DECIMATE'):
                         collisionFile = '%s_collision_%s.mesh' %(prefix,ob.data.name)
@@ -464,7 +453,7 @@ def dot_scene_node_export( ob, path, doc=None, rex=None,
             exists = os.path.isfile( join( path, '%s.mesh' % ob.data.name ) )
             overwrite = not exists or (exists and config.get("MESH_OVERWRITE"))
             mesh.dot_mesh(ob, path, overwrite=overwrite)
-            skeleton.dot_skeleton(ob, path, overwrite=overwrite)    
+            skeleton.dot_skeleton(ob, path, overwrite=overwrite)
             exported_meshes.append( ob.data.name )
 
         # Deal with Array modifier
@@ -571,4 +560,3 @@ def dot_scene_node_export( ob, path, doc=None, rex=None,
             objects=objects,
             xmlparent=o
         )
-
