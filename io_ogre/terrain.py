@@ -98,7 +98,7 @@ class OgreCollisionOp(bpy.types.Operator):
 
     def create_DECIMATED(self, ob):
         child = ob.copy()
-        bpy.context.scene.collection.objects.link( child )
+        bpy.context.scene.objects.link( child )
         child.matrix_local = mathutils.Matrix()
         child.parent = ob
         child.hide_select = True
@@ -175,8 +175,8 @@ class OgreCollisionOp(bpy.types.Operator):
         if ob.show_wire:
             ob.show_wire = False
         for child in ob.children:
-            if child.subcollision and not child.hide_viewport:
-                child.hide_viewport = True
+            if child.subcollision and not child.hide:
+                child.hide = True
 
         if mode == 'NONE':
             game.use_ghost = True
@@ -198,7 +198,7 @@ class OgreCollisionOp(bpy.types.Operator):
             game.use_collision_bounds = False
             game.use_collision_compound = True
             proxy = self.get_subcollisions(ob)[0]
-            if proxy.hide_viewport: proxy.hide_viewport = False
+            if proxy.hide: proxy.hide = False
             ob.game.use_collision_compound = True  # proxy
             mod = _get_proxy_decimate_mod( ob )
             mod.show_viewport = True
@@ -213,8 +213,8 @@ class OgreCollisionOp(bpy.types.Operator):
             game.use_collision_bounds = False
             game.use_collision_compound = True
             proxy = self.get_subcollisions(ob)[0]
-            if proxy.hide_viewport:
-                proxy.hide_viewport = False
+            if proxy.hide:
+                proxy.hide = False
         elif mode == 'COMPOUND':
             game.use_ghost = True
             game.use_collision_bounds = False

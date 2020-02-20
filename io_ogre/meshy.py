@@ -20,7 +20,7 @@ class OGREMESH_OT_preview(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.active_object and context.active_object.type in ('MESH','EMPTY') and context.mode != 'EDIT_MESH':
-            if context.active_object.type == 'EMPTY' and context.active_object.instance_type != 'COLLECTION':
+            if context.active_object.type == 'EMPTY' and context.active_object.dupli_type != 'GROUP':
                 return False
             else:
                 return True
@@ -44,8 +44,8 @@ class OGREMESH_OT_preview(bpy.types.Operator):
         elif context.active_object.type == 'EMPTY': # assume group
             obs = []
             for e in context.selected_objects:
-                if e.type != 'EMPTY' and e.instance_collection: continue
-                grp = e.instance_collection
+                if e.type != 'EMPTY' and e.dupli_group: continue
+                grp = e.dupli_group
                 subs = []
                 for o in grp.objects:
                     if o.type=='MESH': subs.append( o )
@@ -65,8 +65,7 @@ class OGREMESH_OT_preview(bpy.types.Operator):
 
         if not merged:
             mgroup = False # TODO relevant? MeshMagick.get_merge_group( context.active_object )
-            #BQfix v2.8 groups to collections
-            if not mgroup and self.collections:
+            if not mgroup and self.groups:
                 group = get_merge_group( context.active_object )
                 if group:
                     print('--------------- has merge group ---------------' )
@@ -97,3 +96,4 @@ class OGREMESH_OT_preview(bpy.types.Operator):
 
         Report.show()
         return {'FINISHED'}
+

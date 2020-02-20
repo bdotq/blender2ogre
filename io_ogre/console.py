@@ -9,8 +9,7 @@ def export(object_names):
         index = bpy.data.objects.find(name)
         if index != -1:
             obj = bpy.data.objects[index]
-            obj.data.update()
-            obj.data.calc_loop_triangles()
+            obj.data.update(calc_tessface=True)
             export_mesh(obj, '/tmp')
 
 

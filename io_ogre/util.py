@@ -283,19 +283,19 @@ def is_strictly_simple_terrain( ob ):
 
 def get_image_textures( mat ):
     r = []
-    for s in mat.texture_paint_images:
-        if s:
+    for s in mat.texture_slots:
+        if s and s.texture != None and s.texture.type == 'IMAGE':
             r.append( s )
     return r
 
-def texture_image_path(image):
-    raise NotImplementedError("TODO: Remove??")
-    if not image:
+def texture_image_path(tex):
+
+    if not tex.image:
         return None
 
     if tex.library: # support library linked textures
         libpath = split(bpy.path.abspath(tex.library.filepath))[0]
-        image_filepath = bpy.path.abspath(tex.filepath, libpath)
+        image_filepath = bpy.path.abspath(tex.image.filepath, libpath)
     else:
         if tex.image.packed_file:
             return tex.image.name+".png"
@@ -334,17 +334,17 @@ def gather_instances():
 
 def select_instances( context, name ):
     for ob in bpy.context.scene.objects:
-        ob.select_set(False)
+        ob.select = False
     ob = bpy.context.scene.objects[ name ]
     if ob.data:
         inst = gather_instances()
-        for ob in inst[ ob.data ]: ob.select_set(True)
+        for ob in inst[ ob.data ]: ob.select = True
         bpy.context.scene.objects.active = ob
 
 def select_group( context, name, options={} ):
     for ob in bpy.context.scene.objects:
-        ob.select_set(False)
-    for grp in bpy.data.collections:
+        ob.select = False
+    for grp in bpy.data.groups:
         if grp.name == name:
             # context.scene.objects.active = grp.objects
             # Note that the context is read-only. These values cannot be modified directly,
@@ -353,7 +353,7 @@ def select_group( context, name, options={} ):
             # will work as expected. - http://wiki.blender.org/index.php?title=Dev:2.5/Py/API/Intro&useskin=monobook
             bpy.context.scene.objects.active = grp.objects[0]
             for ob in grp.objects:
-                ob.select_set(True)
+                ob.select = True
         else:
             pass
 
@@ -391,71 +391,57 @@ def merge_group( group ):
     copies = []
     for ob in group.objects:
         if ob.type == 'MESH':
-
             o2 = ob.copy(); copies.append( o2 )
-            #BQfix needed? o2.data = bpy.data.meshes.new_from_object(o2)
+            o2.data = o2.to_mesh(bpy.context.scene, True, "PREVIEW") # collaspe modifiers
             while o2.modifiers:
                 o2.modifiers.remove( o2.modifiers[0] )
-            bpy.context.scene.collection.objects.link( o2 ) #; o2.select = True
+            bpy.context.scene.objects.link( o2 ) #; o2.select = True
 
     name = group.name[len("merge."):] if group.name != "merge." else "mergeGroup"
 
-    #BQfix for .data.name being read-only
-    copies[len(copies) - 1].data.name = name
-
     merged = merge( copies )
-
     merged.name = name
-    #merged.data.name = name #2.8 not renaming, readonly?
-    #print('.data.name: ', merged.data.name )
-
+    merged.data.name = name
     return merged
 
 def merge_objects( objects, name='_temp_', transform=None ):
     assert objects
     copies = []
     for ob in objects:
-        ob.select_set(False)
+        ob.select = False
         if ob.type == 'MESH':
             o2 = ob.copy(); copies.append( o2 )
-            o2.data = o2.to_mesh() # collaspe modifiers
+            o2.data = o2.to_mesh(bpy.context.scene, True, "PREVIEW") # collaspe modifiers
             while o2.modifiers:
                 o2.modifiers.remove( o2.modifiers[0] )
             if transform:
-                o2.matrix_world =  transform @ o2.matrix_local
-            bpy.context.scene.collection.objects.link( o2 ) #; o2.select_set(True)
+                o2.matrix_world =  transform * o2.matrix_local
+            bpy.context.scene.objects.link( o2 ) #; o2.select = True
     merged = merge( copies )
-
     merged.name = name
-    #merged.data.name = name #2.8 not renaming, readonly?
-
+    merged.data.name = name
     return merged
 
 def merge( objects ):
     for ob in bpy.context.selected_objects:
-        ob.select_set(False)
+        ob.select = False
     for ob in objects:
         print('\t'+ob.name)
-        ob.select_set(True)
+        ob.select = True
         assert not ob.library
-    #2.8update
-    bpy.context.view_layer.objects.active = ob
+    bpy.context.scene.objects.active = ob
     bpy.ops.object.join()
-    print('Successfully joined!')
     return bpy.context.active_object
-    #return copied.context.active_object
 
 def get_merge_group( ob, prefix='merge.' ):
     m = []
-    for grp in ob.users_collection:
+    for grp in ob.users_group:
         if grp.name.lower().startswith(prefix): m.append( grp )
-    if len(m)==1:   #BQ- this only works for 1 merge group per export?
+    if len(m)==1:
         #if ob.data.users != 1:
         #    print( 'WARNING: an instance can not be in a merge group' )
         #    return
-
         return m[0]
-
     elif m:
         print('WARNING: an object can not be in two merge groups at the same time', ob)
         return
@@ -596,3 +582,4 @@ class IndentedWriter(object):
 
     def line(self, text):
         return self.write(text + "\n")
+

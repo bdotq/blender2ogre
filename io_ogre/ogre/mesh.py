@@ -10,43 +10,32 @@ from .skeleton import Skeleton
 
 class VertexColorLookup:
     def __init__(self, mesh):
-        self.mesh = mesh
-
-        self.__colors = None
-        self.__alphas = None
-
-        color_names = ["col", "color"]
-        alpha_names = ["a", "alpha"]
-
-        if len(self.mesh.vertex_colors):
-            for key, colors in self.mesh.vertex_colors.items():
-                if (self.__colors is None) and (key.lower() in color_names):
-                    self.__colors = colors
-                if (self.__alphas is None) and (key.lower() in alpha_names):
-                    self.__alphas = colors
-            if self.__colors is None and self.__alphas is None:
-                # No alpha and color found by name, assume that the only
-                # vertex color data is actual color data
-                self.__colors = colors
-
-            if self.__colors:
-                self.__colors = [x.color for x in self.__colors.data]
-            if self.__alphas:
-                self.__alphas = [x.color for x in self.__alphas.data]
-
-    @property
-    def has_color_data(self):
-        return self.__colors is not None or self.__alphas is not None
-
-    def get(self, item):
-        if self.__colors:
-            color = self.__colors[item]
+        self.vcolors = None
+        self.vcolors_alpha = None
+        self.has_vcolors = False
+        
+        if len(mesh.tessface_vertex_colors) == 0:
+            return
+        self.vcolors = mesh.tessface_vertex_colors[0]
+        self.has_vcolors = bool(self.vcolors)
+        
+        for bloc in mesh.tessface_vertex_colors:
+            if bloc.name.lower().startswith('alpha'):
+                self.vcolors_alpha = bloc
+                break
+    
+    def get(self, face, index):
+        if not self.has_vcolors:
+            return (1.0,) * 4
+        
+        k = list(face.vertices).index(index)
+        r,g,b = getattr( self.vcolors.data[face.index], 'color%s'%(k+1) )
+        if self.vcolors_alpha:
+            ra,ga,ba = getattr( self.vcolors_alpha.data[face.index], 'color%s'%(k+1) )
         else:
-            color = [1.0] * 4
-        if self.__alphas:
-            color[3] = mathutils.Vector(self.__alphas[item]).length
-        return color
-
+            ra = 1.0
+        
+        return (r,g,b,ra)
 
 def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=True, isLOD=False, **kwargs):
     """
@@ -74,28 +63,25 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
 
     start = time.time()
 
-    # blender per default does not calculate these. when querying the quads/tris
+    # blender per default does not calculate these. when querying the quads/tris 
     # of the object blender would crash if calc_tessface was not updated
-    ob.data.update()
-    ob.data.calc_loop_triangles()
+    ob.data.update(calc_tessface=True)
 
     Report.meshes.append( obj_name )
-    Report.faces += len( ob.data.loop_triangles )
+    Report.faces += len( ob.data.tessfaces )
     Report.orig_vertices += len( ob.data.vertices )
 
     cleanup = False
     if ob.modifiers:
         cleanup = True
         copy = ob.copy()
-        #bpy.context.scene.collection.objects.link(copy)
+        #bpy.context.scene.objects.link(copy)
         rem = []
         for mod in copy.modifiers:        # remove armature and array modifiers before collaspe
             if mod.type in 'ARMATURE ARRAY'.split(): rem.append( mod )
         for mod in rem: copy.modifiers.remove( mod )
         # bake mesh
-        mesh = copy.to_mesh()    # collaspe
-        mesh.update()
-        mesh.calc_loop_triangles()
+        mesh = copy.to_mesh(bpy.context.scene, True, "PREVIEW")    # collaspe
     else:
         copy = ob
         mesh = ob.data
@@ -123,9 +109,10 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                 'positions':'true',
                 'normals':'true',
                 'colours_diffuse' : str(bool( mesh.vertex_colors )),
-                'texture_coords' : '%s' % len(mesh.uv_layers) if mesh.uv_layers.active else 0
+                'texture_coords' : '%s' % len(mesh.uv_textures) if mesh.uv_textures.active else '0'
         })
 
+        # Vertex colors
         vertex_color_lookup = VertexColorLookup(mesh)
 
         # Materials
@@ -133,6 +120,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
         materials = []
         # a material named 'vertex.color.<yourname>' will overwrite
         # the diffuse color in the mesh file!
+
         for mat in ob.data.materials:
             mat_name = "_missing_material_"
             if mat is not None:
@@ -155,7 +143,14 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
             material_faces.append([])
 
         # Textures
-        dotextures = len(mesh.uv_layers) > 0
+        dotextures = False
+        uvcache = [] # should get a little speed boost by this cache
+        if mesh.tessface_uv_textures.active:
+            dotextures = True
+            for layer in mesh.tessface_uv_textures:
+                uvs = []; uvcache.append( uvs ) # layer contains: name, active, data
+                for uvface in layer.data:
+                    uvs.append( (uvface.uv1, uvface.uv2, uvface.uv3, uvface.uv4) )
 
         shared_vertices = {}
         _remap_verts_ = []
@@ -167,16 +162,25 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
         if mesh.has_custom_normals:
             mesh.calc_normals_split()
             # Create bmesh to help obtain custom vertex normals
-            bm = bmesh.new()
+            bm = bmesh.new() 
             bm.from_mesh(mesh)
             bm.verts.ensure_lookup_table()
 
-        for F in mesh.loop_triangles:
+        for F in mesh.tessfaces:
             smooth = F.use_smooth
             faces = material_faces[ F.material_index ]
             # Ogre only supports triangles
             tris = []
             tris.append( (F.vertices[0], F.vertices[1], F.vertices[2]) )
+            if len(F.vertices) >= 4:
+                tris.append( (F.vertices[0], F.vertices[2], F.vertices[3]) )
+            if dotextures:
+                a = []; b = []
+                uvtris = [ a, b ]
+                for layer in uvcache:
+                    uv1, uv2, uv3, uv4 = layer[ F.index ]
+                    a.append( (uv1, uv2, uv3) )
+                    b.append( (uv1, uv3, uv4) )
 
             for tidx, tri in enumerate(tris):
                 face = []
@@ -197,15 +201,13 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                         nx,ny,nz = swap( F.normal )
                         n = mathutils.Vector( [nx, ny, nz] )
 
-                    r,g,b,ra = vertex_color_lookup.get(F.loops[vidx])
+                    r,g,b,ra = vertex_color_lookup.get(F, idx)
 
                     # Texture maps
                     vert_uvs = []
                     if dotextures:
-                        for layer in mesh.uv_layers:
-                            vert_uvs.append(layer.data[F.loops[vidx]].uv)
-                        """for layer in uvtris[ tidx ]:
-                            vert_uvs.append(layer[ vidx ])"""
+                        for layer in uvtris[ tidx ]:
+                            vert_uvs.append(layer[ vidx ])
 
                     ''' Check if we already exported that vertex with same normal, do not export in that case,
                         (flat shading in blender seems to work with face normals, so we copy each flat face'
@@ -240,7 +242,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                     _remap_normals_.append( n )
                     _face_indices_.append( F.index )
 
-                    x,y,z = swap(v.co)        # xz-y is correct!
+                    x,y,z = swap(ob.matrix_world * v.co)        # xz-y is correct!
 
                     doc.start_tag('vertex', {})
                     doc.leaf_tag('position', {
@@ -255,7 +257,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                             'z' : '%6f' % nz
                     })
 
-                    if vertex_color_lookup.has_color_data:
+                    if vertex_color_lookup.has_vcolors:
                         doc.leaf_tag('colour_diffuse', {'value' : '%6f %6f %6f %6f' % (r,g,b,ra)})
 
                     # Texture maps
@@ -369,7 +371,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
             def activate_object(obj):
                 bpy.ops.object.select_all(action = 'DESELECT')
                 bpy.context.scene.objects.active = obj
-                obj.select_set(True)
+                obj.select = True
 
             def duplicate_object(scene, name, copyobj):
 
@@ -386,8 +388,8 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                 ob_new.scale = copyobj.scale
 
                 # Link new object to the given scene and select it
-                scene.collection.objects.link(ob_new)
-                ob_new.select_set(True)
+                scene.objects.link(ob_new)
+                ob_new.select = True
 
                 return ob_new, mesh
 
@@ -427,9 +429,8 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                 lod_min_vertice_count = 12
 
                 for level in range(lod_levels+1)[1:]:
-                    raise ValueError("No lod please!")
                     decimate.ratio = lod_current_ratio
-                    lod_mesh = ob_copy.to_mesh()
+                    lod_mesh = ob_copy.to_mesh(scene = bpy.context.scene, apply_modifiers = True, settings = 'PREVIEW')
                     ob_copy_meshes.append(lod_mesh)
 
                     # Check min vertice count and that the vertice count got reduced from last iteration
@@ -460,10 +461,10 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                         'manual'    : "true"
                     })
 
-                    print('        - Generating', len(lod_generated), 'LOD meshes. Original: vertices', len(mesh.vertices), "faces", len(mesh.loop_triangles))
+                    print('        - Generating', len(lod_generated), 'LOD meshes. Original: vertices', len(mesh.vertices), "faces", len(mesh.tessfaces))
                     for lod in lod_generated:
                         ratio_percent = round(lod['ratio'] * 100.0, 0)
-                        print('        > Writing LOD', lod['level'], 'for distance', lod['distance'], 'and ratio', str(ratio_percent) + "%", 'with', len(lod['mesh'].vertices), 'vertices', len(lod['mesh'].loop_triangles), 'faces')
+                        print('        > Writing LOD', lod['level'], 'for distance', lod['distance'], 'and ratio', str(ratio_percent) + "%", 'with', len(lod['mesh'].vertices), 'vertices', len(lod['mesh'].tessfaces), 'faces')
                         lod_ob_temp = bpy.data.objects.new(obj_name, lod['mesh'])
                         lod_ob_temp.data.name = obj_name + '_LOD_' + str(lod['level'])
                         dot_mesh(lod_ob_temp, path, lod_ob_temp.data.name, ignore_shape_animation, normals, isLOD=True)
@@ -525,7 +526,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
             badverts = 0
             for vidx, v in enumerate(_remap_verts_):
                 check = 0
-                for vgroup in v.collections:
+                for vgroup in v.groups:
                     if vgroup.weight > config.get('TRIM_BONE_WEIGHTS'):
                         groupIndex = vgroup.group
                         if groupIndex < len(copy.vertex_groups):
@@ -570,7 +571,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                 })
 
                 snormals = None
-
+                
                 if config.get('SHAPE_NORMALS'):
                     if smooth:
                         snormals = skey.normals_vertex_get()
@@ -579,7 +580,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
 
                 for vidx, v in enumerate(_remap_verts_):
                     pv = skey.data[ v.index ]
-                    x,y,z = swap( pv.co - v.co )
+                    x,y,z = swap( ob.matrix_world * pv.co - ob.matrix_world * v.co )
 
                     if config.get('SHAPE_NORMALS'):
                         n = _remap_normals_[ vidx ]
@@ -657,14 +658,19 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
                 print('        Done at', timer_diff_str(start), "seconds")
 
         ## Clean up and save
+        #bpy.context.scene.meshes.unlink(mesh)
         if cleanup:
+            #bpy.context.scene.objects.unlink(copy)
             copy.user_clear()
             bpy.data.objects.remove(copy)
+            mesh.user_clear()
+            bpy.data.meshes.remove(mesh)
             del copy
             del mesh
         del _remap_verts_
         del _remap_normals_
         del _face_indices_
+        del uvcache
         doc.close() # reported by Reyn
         f.close()
 
@@ -704,9 +710,9 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
 
 def triangle_list_in_group(mesh, shared_vertices, group_index):
     faces = []
-    for face in mesh.data.loop_triangles:
+    for face in mesh.data.tessfaces: 
         vertices = [mesh.data.vertices[v] for v in face.vertices]
-        match_group = lambda g, v: g in [x.group for x in v.collections]
+        match_group = lambda g, v: g in [x.group for x in v.groups]
         all_in_group = all([match_group(group_index, v) for v in vertices])
         if not all_in_group:
             continue
@@ -726,7 +732,7 @@ def append_triangle_in_vertex_group(mesh, obj, vertex_groups, ogre_indices, blen
             if not group.name.startswith("ogre.vertex.group."):
                 return
             names.add(group.name)
-    match_group = lambda name, v: name in [obj.vertex_groups[x.group].name for x in v.collections]
+    match_group = lambda name, v: name in [obj.vertex_groups[x.group].name for x in v.groups]
     for name in names:
         all_in_group = all([match_group(name, v) for v in vertices])
         if not all_in_group:
@@ -832,3 +838,4 @@ class VertexNoPos(object):
 
     def __repr__(self):
         return 'vertex(%d)' % self.ogre_vidx
+
